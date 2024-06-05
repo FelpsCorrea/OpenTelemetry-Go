@@ -28,8 +28,8 @@ func GetTemperature(w http.ResponseWriter, r *http.Request) {
 	ctx := otel.GetTextMapPropagator().Extract(r.Context(), carrier)
 	tracer := otel.Tracer("weatherapi")
 
-	// Start tracing the weather API request
-	ctx, span := tracer.Start(ctx, "send-weatherapi")
+	// Start tracing the temperature API request
+	ctx2, span := tracer.Start(ctx, "service_b")
 	defer span.End()
 
 	// Get the city parameter from the URL
@@ -53,8 +53,14 @@ func GetTemperature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Start tracing the temperature request
+	_, calculateTempSpan := tracer.Start(ctx2, "service_b: weather-api-request")
+
 	// Make the request to the weather API
 	resp, err := client.Do(req)
+
+	// End the temperature request trace
+	calculateTempSpan.End()
 	if err != nil {
 		http.Error(w, "Failed to fetch weather data", http.StatusInternalServerError)
 		return
@@ -66,9 +72,6 @@ func GetTemperature(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Weather service returned non-OK status", resp.StatusCode)
 		return
 	}
-
-	// Start tracing the temperature calculations
-	_, calculateTemps := tracer.Start(ctx, "calculate-temperatures")
 
 	// Decode the JSON response from the weather API
 	var data WeatherResponse
@@ -97,8 +100,6 @@ func GetTemperature(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewEncoder(w).Encode(response)
 
-	// End the temperature calculations trace
-	calculateTemps.End()
 }
 
 // Structs for parsing the weather API response and formatting the temperature data

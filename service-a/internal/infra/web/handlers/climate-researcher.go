@@ -44,8 +44,7 @@ func GetWeatherHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := otel.GetTextMapPropagator().Extract(r.Context(), carrier)
 	tracer := otel.Tracer("viacepapi")
 
-	// Start tracing the request to the ViaCep API
-	ctx, span := tracer.Start(ctx, "send-viacep")
+	ctx2, span := tracer.Start(ctx, "service_a")
 	defer span.End()
 
 	cep := chi.URLParam(r, "cep")
@@ -62,8 +61,14 @@ func GetWeatherHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx3, viaCepSpan := tracer.Start(ctx2, "service_a: via-cep-request")
+
 	// Make the request to the ViaCep API
 	viaCepResponse, err := http.DefaultClient.Do(req)
+
+	// End the ViaCep request trace
+	viaCepSpan.End()
+
 	if err != nil {
 		HandleError(w, http.StatusInternalServerError, err.Error(), nil)
 		return
@@ -93,19 +98,28 @@ func GetWeatherHandler(w http.ResponseWriter, r *http.Request) {
 	city := data.Localidade
 
 	// Start tracing the request to the temperature microservice
-	_, renderContent := tracer.Start(ctx, "get-from-microservice-b")
+	ctx4, serviceBSpan := tracer.Start(ctx3, "service_a: get-from-service-b")
 
-	// Make the request to the temperature microservice
-	temperatura, err := http.Get("http://service-b:8181/" + city)
+	// Create a new request to the temperature microservice and propagate the tracing context
+	tempURL := "http://service-b:8181/" + city
+	tempReq, err := http.NewRequest(http.MethodGet, tempURL, nil)
 	if err != nil {
 		HandleError(w, http.StatusInternalServerError, err.Error(), nil)
 		return
 	}
-	defer temperatura.Body.Close()
+	otel.GetTextMapPropagator().Inject(ctx4, propagation.HeaderCarrier(tempReq.Header))
+
+	// Make the request to the temperature microservice
+	tempResponse, err := http.DefaultClient.Do(tempReq)
+	if err != nil {
+		HandleError(w, http.StatusInternalServerError, err.Error(), nil)
+		return
+	}
+	defer tempResponse.Body.Close()
 
 	// Deserialize the JSON response from the temperature microservice
 	var temperatureData TemperatureData
-	err = json.NewDecoder(temperatura.Body).Decode(&temperatureData)
+	err = json.NewDecoder(tempResponse.Body).Decode(&temperatureData)
 	if err != nil {
 		HandleError(w, http.StatusInternalServerError, "Failed to decode temperature data", err)
 		return
@@ -115,7 +129,8 @@ func GetWeatherHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(temperatureData)
-	renderContent.End()
+
+	serviceBSpan.End()
 }
 
 // HandleError handles errors and sends a JSON response with the error message
